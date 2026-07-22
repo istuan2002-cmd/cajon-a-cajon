@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Package, Users, DollarSign, Calendar, Plus, Trash2, Check, ChevronDown, ChevronUp, TrendingUp, X, AlertCircle, Loader2 } from 'lucide-react';
+import { Package, Users, DollarSign, Calendar, Plus, Trash2, Check, ChevronDown, ChevronUp, TrendingUp, X, AlertCircle, Loader2, Wallet, Truck } from 'lucide-react';
 
 const C = {
   bg: '#1B1812',
@@ -31,7 +31,6 @@ const DEFAULT_CATEGORIAS = [
   { id: 'manchado', nombre: 'Manchado', precioCosto: 0 },
 ];
 
-// --- Guardado local en el navegador (persiste en este dispositivo) ---
 function storageGet(key) {
   try {
     const v = window.localStorage.getItem(key);
@@ -60,6 +59,11 @@ function formatMoney(n) {
 }
 
 function formatFecha(iso) {
+  if (!iso) return '';
+  if (iso.includes('T')) {
+    const d = new Date(iso);
+    return d.toLocaleDateString('es-AR') + ' ' + d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+  }
   const [y, m, d] = iso.split('-');
   return `${d}/${m}/${y}`;
 }
@@ -89,20 +93,6 @@ function calcItem(item, categorias, cliente) {
   return { totalMaples, costoCajon, ventaCajon, costoTotal, ventaTotal, ganancia: ventaTotal - costoTotal };
 }
 
-function EstadoStamp({ saldo, totalVenta }) {
-  let label = 'PAGADO', color = C.success, bg = C.successBg, border = C.successBorder;
-  if (saldo > 0 && saldo < totalVenta) { label = 'PARCIAL'; color = C.accent; bg = C.accentSoft; border = C.accentDark; }
-  else if (saldo >= totalVenta && saldo > 0) { label = 'DEBE'; color = C.danger; bg = C.dangerBg; border = C.dangerBorder; }
-  return (
-    <span
-      className="inline-block px-2 py-1 text-xs font-bold tracking-widest rounded"
-      style={{ color, backgroundColor: bg, border: `1.5px dashed ${border}`, transform: 'rotate(-2deg)' }}
-    >
-      {label}
-    </span>
-  );
-}
-
 function Field({ label, children }) {
   return (
     <label className="flex flex-col gap-1">
@@ -117,6 +107,7 @@ function inputStyle() {
     backgroundColor: C.paper,
     color: '#2A2415',
     border: `1px solid ${C.paperBorder}`,
+    fontSize: '16px',
   };
 }
 
@@ -126,16 +117,20 @@ export default function GestionHuevosMayorista() {
   const [categorias, setCategorias] = useState([]);
   const [clientes, setClientes] = useState([]);
   const [pedidos, setPedidos] = useState([]);
+  const [pagos, setPagos] = useState([]);
+  const [pagosProveedor, setPagosProveedor] = useState([]);
   const [tab, setTab] = useState('pedidos');
 
   const [nuevoPedido, setNuevoPedido] = useState({ clienteId: '', fecha: todayISO(), items: [emptyItem()] });
   const [expanded, setExpanded] = useState({});
-  const [pagoInputs, setPagoInputs] = useState({});
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [nuevoClienteNombre, setNuevoClienteNombre] = useState('');
   const [nuevoClienteTel, setNuevoClienteTel] = useState('');
   const [nuevaCategoriaNombre, setNuevaCategoriaNombre] = useState('');
   const [resumenPeriodo, setResumenPeriodo] = useState('todo');
+  const [pagoClienteInputs, setPagoClienteInputs] = useState({});
+  const [pagoProveedorInput, setPagoProveedorInput] = useState('');
+  const [deudasAbierto, setDeudasAbierto] = useState({});
 
   useEffect(() => { loadAll(); }, []);
 
@@ -160,9 +155,51 @@ export default function GestionHuevosMayorista() {
       ped = rped ? JSON.parse(rped.value) : null;
       if (!ped) ped = [];
 
+      let pg = null;
+      const rpg = storageGet('huevos-pagos');
+      pg = rpg ? JSON.parse(rpg.value) : null;
+
+      // Migración: si venía del sistema viejo (pagos guardados dentro de cada pedido)
+      // y todavía no existe la lista general de pagos, la reconstruimos una vez.
+      if (!pg) {
+        pg = [];
+        let huboMigracion = false;
+        ped.forEach((p) => {
+          if (Array.isArray(p.pagos) && p.pagos.length > 0) {
+            huboMigracion = true;
+            p.pagos.forEach((pago) => {
+              pg.push({
+                id: Math.random().toString(36).slice(2) + Date.now().toString(36) + Math.random().toString(36).slice(2),
+                clienteId: p.clienteId,
+                monto: pago.monto,
+                fecha: pago.fecha || new Date().toISOString(),
+              });
+            });
+          }
+        });
+        if (huboMigracion) {
+          storageSet('huevos-pagos', JSON.stringify(pg));
+        }
+      }
+      // Limpiamos los campos viejos de los pedidos (ya no se usan)
+      const pedLimpios = ped.map((p) => {
+        const { pagos: _pagos, montoPagado: _mp, saldo: _saldo, ...resto } = p;
+        return resto;
+      });
+      if (JSON.stringify(pedLimpios) !== JSON.stringify(ped)) {
+        storageSet('huevos-pedidos', JSON.stringify(pedLimpios));
+      }
+
       setCategorias(cats);
       setClientes(cli);
-      setPedidos(ped);
+      setPedidos(pedLimpios);
+      setPagos(pg);
+
+      let pgProv = null;
+      const rpgProv = storageGet('huevos-pagos-proveedor');
+      pgProv = rpgProv ? JSON.parse(rpgProv.value) : null;
+      if (!pgProv) pgProv = [];
+      setPagosProveedor(pgProv);
     } catch (e) {
       setError('No se pudieron cargar los datos guardados.');
     } finally {
@@ -230,25 +267,9 @@ export default function GestionHuevosMayorista() {
       totalCosto,
       totalVenta,
       totalGanancia,
-      pagos: [],
-      montoPagado: 0,
-      saldo: totalVenta,
     };
     persist('huevos-pedidos', [pedido, ...pedidos], setPedidos);
     setNuevoPedido({ clienteId: cliente.id, fecha: nuevoPedido.fecha, items: [emptyItem()] });
-  }
-
-  function registrarPago(pedidoId) {
-    const monto = Number(pagoInputs[pedidoId]);
-    if (!monto || monto <= 0) return;
-    const updated = pedidos.map((p) => {
-      if (p.id !== pedidoId) return p;
-      const nuevoMontoPagado = p.montoPagado + monto;
-      const nuevoSaldo = Math.max(0, p.totalVenta - nuevoMontoPagado);
-      return { ...p, montoPagado: nuevoMontoPagado, saldo: nuevoSaldo, pagos: [...p.pagos, { monto, fecha: new Date().toISOString() }] };
-    });
-    persist('huevos-pedidos', updated, setPedidos);
-    setPagoInputs((s) => ({ ...s, [pedidoId]: '' }));
   }
 
   function eliminarPedido(id) {
@@ -290,8 +311,46 @@ export default function GestionHuevosMayorista() {
     setNuevaCategoriaNombre('');
   }
 
+  // --- Cuenta corriente / deuda acumulada por cliente ---
+  function totalVentasCliente(clienteId) {
+    return pedidos.filter((p) => p.clienteId === clienteId).reduce((s, p) => s + p.totalVenta, 0);
+  }
+  function totalPagadoCliente(clienteId) {
+    return pagos.filter((pg) => pg.clienteId === clienteId).reduce((s, pg) => s + pg.monto, 0);
+  }
   function deudaCliente(clienteId) {
-    return pedidos.filter((p) => p.clienteId === clienteId).reduce((s, p) => s + p.saldo, 0);
+    return totalVentasCliente(clienteId) - totalPagadoCliente(clienteId);
+  }
+
+  function registrarPagoCliente(clienteId) {
+    const monto = Number(pagoClienteInputs[clienteId]);
+    if (!monto || monto <= 0) return;
+    const nuevoPago = { id: Math.random().toString(36).slice(2) + Date.now().toString(36), clienteId, monto, fecha: new Date().toISOString() };
+    persist('huevos-pagos', [nuevoPago, ...pagos], setPagos);
+    setPagoClienteInputs((s) => ({ ...s, [clienteId]: '' }));
+  }
+
+  function eliminarPago(id) {
+    persist('huevos-pagos', pagos.filter((pg) => pg.id !== id), setPagos);
+    setConfirmDelete(null);
+  }
+
+  // --- Deuda con el proveedor (lo que vos le debés a él) ---
+  const totalComprado = useMemo(() => pedidos.reduce((s, p) => s + p.totalCosto, 0), [pedidos]);
+  const totalPagadoProveedor = useMemo(() => pagosProveedor.reduce((s, pg) => s + pg.monto, 0), [pagosProveedor]);
+  const deudaProveedor = totalComprado - totalPagadoProveedor;
+
+  function registrarPagoProveedor() {
+    const monto = Number(pagoProveedorInput);
+    if (!monto || monto <= 0) return;
+    const nuevoPago = { id: Math.random().toString(36).slice(2) + Date.now().toString(36), monto, fecha: new Date().toISOString() };
+    persist('huevos-pagos-proveedor', [nuevoPago, ...pagosProveedor], setPagosProveedor);
+    setPagoProveedorInput('');
+  }
+
+  function eliminarPagoProveedor(id) {
+    persist('huevos-pagos-proveedor', pagosProveedor.filter((pg) => pg.id !== id), setPagosProveedor);
+    setConfirmDelete(null);
   }
 
   const pedidosPorFecha = useMemo(() => {
@@ -319,8 +378,15 @@ export default function GestionHuevosMayorista() {
     ganancia: pedidosFiltradosResumen.reduce((s, p) => s + p.totalGanancia, 0),
   }), [pedidosFiltradosResumen]);
 
-  const deudaTotal = useMemo(() => pedidos.reduce((s, p) => s + p.saldo, 0), [pedidos]);
-  const clientesConDeuda = useMemo(() => clientes.map((c) => ({ ...c, deuda: deudaCliente(c.id) })).filter((c) => c.deuda > 0).sort((a, b) => b.deuda - a.deuda), [clientes, pedidos]);
+  const clientesConSaldo = useMemo(
+    () => clientes.map((c) => ({ ...c, deuda: deudaCliente(c.id) })).sort((a, b) => b.deuda - a.deuda),
+    [clientes, pedidos, pagos]
+  );
+  const deudaTotal = useMemo(
+    () => clientesConSaldo.reduce((s, c) => s + Math.max(0, c.deuda), 0),
+    [clientesConSaldo]
+  );
+  const clientesConDeuda = useMemo(() => clientesConSaldo.filter((c) => c.deuda > 0), [clientesConSaldo]);
 
   if (loading) {
     return (
@@ -332,6 +398,8 @@ export default function GestionHuevosMayorista() {
 
   const tabs = [
     { id: 'pedidos', label: 'Pedidos', icon: Package },
+    { id: 'deudas', label: 'Deudas', icon: Wallet },
+    { id: 'proveedor', label: 'Proveedor', icon: Truck },
     { id: 'clientes', label: 'Clientes', icon: Users },
     { id: 'precios', label: 'Costos', icon: DollarSign },
     { id: 'resumen', label: 'Resumen', icon: TrendingUp },
@@ -360,7 +428,7 @@ export default function GestionHuevosMayorista() {
           </div>
         )}
 
-        <nav className="flex px-3 gap-1 mt-4 sticky top-0 z-10 py-2" style={{ backgroundColor: C.bg }}>
+        <nav className="flex px-2 gap-1 mt-4 sticky top-0 z-10 py-2 overflow-x-auto" style={{ backgroundColor: C.bg }}>
           {tabs.map((t) => {
             const Icon = t.icon;
             const active = tab === t.id;
@@ -373,6 +441,7 @@ export default function GestionHuevosMayorista() {
                   backgroundColor: active ? C.accentSoft : 'transparent',
                   color: active ? C.accent : C.textMuted,
                   border: active ? `1px solid ${C.accentDark}` : '1px solid transparent',
+                  minWidth: '64px',
                 }}
               >
                 <Icon size={16} />
@@ -399,12 +468,41 @@ export default function GestionHuevosMayorista() {
               pedidosPorFecha={pedidosPorFecha}
               expanded={expanded}
               setExpanded={setExpanded}
-              pagoInputs={pagoInputs}
-              setPagoInputs={setPagoInputs}
-              registrarPago={registrarPago}
               confirmDelete={confirmDelete}
               setConfirmDelete={setConfirmDelete}
               eliminarPedido={eliminarPedido}
+            />
+          )}
+
+          {tab === 'deudas' && (
+            <DeudasTab
+              clientesConSaldo={clientesConSaldo}
+              pagos={pagos}
+              pagoClienteInputs={pagoClienteInputs}
+              setPagoClienteInputs={setPagoClienteInputs}
+              registrarPagoCliente={registrarPagoCliente}
+              deudasAbierto={deudasAbierto}
+              setDeudasAbierto={setDeudasAbierto}
+              confirmDelete={confirmDelete}
+              setConfirmDelete={setConfirmDelete}
+              eliminarPago={eliminarPago}
+              totalVentasCliente={totalVentasCliente}
+              totalPagadoCliente={totalPagadoCliente}
+            />
+          )}
+
+          {tab === 'proveedor' && (
+            <ProveedorTab
+              deudaProveedor={deudaProveedor}
+              totalComprado={totalComprado}
+              totalPagadoProveedor={totalPagadoProveedor}
+              pagosProveedor={pagosProveedor}
+              pagoProveedorInput={pagoProveedorInput}
+              setPagoProveedorInput={setPagoProveedorInput}
+              registrarPagoProveedor={registrarPagoProveedor}
+              confirmDelete={confirmDelete}
+              setConfirmDelete={setConfirmDelete}
+              eliminarPagoProveedor={eliminarPagoProveedor}
             />
           )}
 
@@ -443,6 +541,7 @@ export default function GestionHuevosMayorista() {
               deudaTotal={deudaTotal}
               clientesConDeuda={clientesConDeuda}
               pedidosFiltradosResumen={pedidosFiltradosResumen}
+              pedidos={pedidos}
             />
           )}
         </main>
@@ -455,7 +554,7 @@ function PedidosTab(props) {
   const {
     categorias, clientes, nuevoPedido, setNuevoPedido, clienteActual, itemsCalculados, totalesPreview,
     updateItem, addItemRow, removeItemRow, handleGuardarPedido, pedidosPorFecha, expanded, setExpanded,
-    pagoInputs, setPagoInputs, registrarPago, confirmDelete, setConfirmDelete, eliminarPedido,
+    confirmDelete, setConfirmDelete, eliminarPedido,
   } = props;
 
   const sinClientes = clientes.length === 0;
@@ -564,9 +663,11 @@ function PedidosTab(props) {
               </div>
             )}
 
+            <p className="text-xs mt-3" style={{ color: C.textMuted }}>El total de venta se suma a la cuenta corriente del cliente. Los pagos se registran aparte, en la pestaña "Deudas".</p>
+
             <button
               onClick={handleGuardarPedido}
-              className="w-full mt-4 py-3 rounded-lg font-bold text-sm"
+              className="w-full mt-3 py-3 rounded-lg font-bold text-sm"
               style={{ backgroundColor: C.accent, color: '#2A2010' }}
             >
               Guardar pedido
@@ -594,6 +695,7 @@ function PedidosTab(props) {
                 <div className="flex flex-col gap-2">
                   {lista.map((p) => {
                     const isOpen = expanded[p.id];
+                    const deleteKey = `pedido:${p.id}`;
                     return (
                       <div key={p.id} className="rounded-lg p-3" style={{ backgroundColor: C.card, border: `1px solid ${C.cardBorder}` }}>
                         <div className="flex items-center justify-between cursor-pointer" onClick={() => setExpanded((s) => ({ ...s, [p.id]: !s[p.id] }))}>
@@ -602,10 +704,7 @@ function PedidosTab(props) {
                             <p className="text-xs" style={{ color: C.textMuted }}>{p.items.map((i) => i.catNombre).join(', ')}</p>
                           </div>
                           <div className="flex items-center gap-2">
-                            <div className="text-right">
-                              <p className="font-bold text-sm">{formatMoney(p.totalVenta)}</p>
-                              <EstadoStamp saldo={p.saldo} totalVenta={p.totalVenta} />
-                            </div>
+                            <p className="font-bold text-sm">{formatMoney(p.totalVenta)}</p>
                             {isOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
                           </div>
                         </div>
@@ -623,31 +722,14 @@ function PedidosTab(props) {
                               <span style={{ color: C.accent }}>Ganancia {formatMoney(p.totalGanancia)}</span>
                             </div>
 
-                            {p.saldo > 0 && (
-                              <div className="flex gap-2 mt-2">
-                                <input
-                                  type="number" min="0" inputMode="numeric" placeholder={`Pagar (debe ${formatMoney(p.saldo)})`}
-                                  value={pagoInputs[p.id] || ''}
-                                  onChange={(e) => setPagoInputs((s) => ({ ...s, [p.id]: e.target.value }))}
-                                  className="flex-1 px-2 py-1.5 rounded text-sm" style={inputStyle()}
-                                />
-                                <button onClick={() => registrarPago(p.id)} className="px-3 rounded flex items-center gap-1 text-sm font-medium" style={{ backgroundColor: C.successBg, color: C.success, border: `1px solid ${C.successBorder}` }}>
-                                  <Check size={14} /> Pagar
-                                </button>
-                              </div>
-                            )}
-                            {p.montoPagado > 0 && (
-                              <p className="text-xs" style={{ color: C.textFaint }}>Pagado hasta ahora: {formatMoney(p.montoPagado)}</p>
-                            )}
-
-                            {confirmDelete === p.id ? (
+                            {confirmDelete === deleteKey ? (
                               <div className="flex gap-2 mt-1 text-xs items-center">
                                 <span style={{ color: C.danger }}>¿Eliminar este pedido?</span>
                                 <button onClick={() => eliminarPedido(p.id)} className="underline" style={{ color: C.danger }}>Sí, eliminar</button>
                                 <button onClick={() => setConfirmDelete(null)} style={{ color: C.textMuted }}>Cancelar</button>
                               </div>
                             ) : (
-                              <button onClick={() => setConfirmDelete(p.id)} className="text-xs self-start mt-1 flex items-center gap-1" style={{ color: C.textFaint }}>
+                              <button onClick={() => setConfirmDelete(deleteKey)} className="text-xs self-start mt-1 flex items-center gap-1" style={{ color: C.textFaint }}>
                                 <Trash2 size={12} /> Eliminar pedido
                               </button>
                             )}
@@ -662,6 +744,172 @@ function PedidosTab(props) {
           })}
         </div>
       </section>
+    </div>
+  );
+}
+
+function ProveedorTab(props) {
+  const {
+    deudaProveedor, totalComprado, totalPagadoProveedor, pagosProveedor,
+    pagoProveedorInput, setPagoProveedorInput, registrarPagoProveedor,
+    confirmDelete, setConfirmDelete, eliminarPagoProveedor,
+  } = props;
+
+  const historial = [...pagosProveedor].sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+
+  return (
+    <div className="flex flex-col gap-6">
+      <section className="rounded-xl p-4" style={{ backgroundColor: C.card, border: `1px solid ${C.cardBorder}` }}>
+        <h2 className="text-base font-bold mb-1">Tu deuda con el proveedor</h2>
+        <p className="text-xs mb-3" style={{ color: C.textMuted }}>
+          Se acumula sola con el costo de cada pedido que cargás, y baja con cada pago que le hagas a tu proveedor.
+        </p>
+        <p className="text-3xl font-bold mb-4" style={{ color: deudaProveedor > 0 ? C.danger : C.success }}>
+          {deudaProveedor > 0 ? formatMoney(deudaProveedor) : deudaProveedor < 0 ? `A favor ${formatMoney(-deudaProveedor)}` : '$0'}
+        </p>
+
+        <div className="flex gap-2">
+          <input
+            type="number" min="0" inputMode="numeric" placeholder="Monto que le pagás"
+            value={pagoProveedorInput}
+            onChange={(e) => setPagoProveedorInput(e.target.value)}
+            className="flex-1 px-2 py-1.5 rounded text-sm" style={inputStyle()}
+          />
+          <button onClick={registrarPagoProveedor} className="px-3 rounded flex items-center gap-1 text-sm font-medium" style={{ backgroundColor: C.successBg, color: C.success, border: `1px solid ${C.successBorder}` }}>
+            <Check size={14} /> Registrar pago
+          </button>
+        </div>
+
+        <div className="flex justify-between text-xs mt-4 pt-3" style={{ borderTop: `1px solid ${C.cardBorder}`, color: C.textMuted }}>
+          <span>Total comprado (histórico)</span>
+          <span>{formatMoney(totalComprado)}</span>
+        </div>
+        <div className="flex justify-between text-xs mt-1" style={{ color: C.textMuted }}>
+          <span>Total pagado (histórico)</span>
+          <span>{formatMoney(totalPagadoProveedor)}</span>
+        </div>
+      </section>
+
+      <section>
+        <h2 className="text-base font-bold mb-3">Historial de pagos al proveedor</h2>
+        {historial.length === 0 ? (
+          <p className="text-sm" style={{ color: C.textMuted }}>Todavía no registraste pagos.</p>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {historial.map((pg) => {
+              const deleteKey = `pagoProveedor:${pg.id}`;
+              return (
+                <div key={pg.id} className="rounded-lg p-3 flex items-center justify-between" style={{ backgroundColor: C.card, border: `1px solid ${C.cardBorder}` }}>
+                  <span className="text-xs" style={{ color: C.textMuted }}>{formatFecha(pg.fecha)}</span>
+                  <span className="font-semibold text-sm">{formatMoney(pg.monto)}</span>
+                  {confirmDelete === deleteKey ? (
+                    <span className="flex gap-2 items-center text-xs">
+                      <button onClick={() => eliminarPagoProveedor(pg.id)} className="underline" style={{ color: C.danger }}>Sí, eliminar</button>
+                      <button onClick={() => setConfirmDelete(null)} style={{ color: C.textMuted }}>Cancelar</button>
+                    </span>
+                  ) : (
+                    <button onClick={() => setConfirmDelete(deleteKey)} style={{ color: C.textFaint }}>
+                      <Trash2 size={14} />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function DeudasTab(props) {
+  const {
+    clientesConSaldo, pagos, pagoClienteInputs, setPagoClienteInputs, registrarPagoCliente,
+    deudasAbierto, setDeudasAbierto, confirmDelete, setConfirmDelete, eliminarPago,
+    totalVentasCliente, totalPagadoCliente,
+  } = props;
+
+  if (clientesConSaldo.length === 0) {
+    return <p className="text-sm" style={{ color: C.textMuted }}>Todavía no cargaste clientes.</p>;
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-xs mb-1" style={{ color: C.textMuted }}>
+        La deuda se acumula con cada pedido y baja con cada pago que registrés, sin importar a qué pedido corresponda.
+      </p>
+      {clientesConSaldo.map((c) => {
+        const isOpen = deudasAbierto[c.id];
+        const historialPagos = pagos.filter((pg) => pg.clienteId === c.id).sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+        return (
+          <div key={c.id} className="rounded-lg p-3" style={{ backgroundColor: C.card, border: `1px solid ${C.cardBorder}` }}>
+            <div className="flex items-center justify-between cursor-pointer" onClick={() => setDeudasAbierto((s) => ({ ...s, [c.id]: !s[c.id] }))}>
+              <p className="font-semibold text-sm">{c.nombre}</p>
+              <div className="flex items-center gap-2">
+                {c.deuda > 0 ? (
+                  <span className="font-bold text-sm" style={{ color: C.danger }}>Debe {formatMoney(c.deuda)}</span>
+                ) : c.deuda < 0 ? (
+                  <span className="font-bold text-sm" style={{ color: C.success }}>A favor {formatMoney(-c.deuda)}</span>
+                ) : (
+                  <span className="text-sm" style={{ color: C.success }}>Al día</span>
+                )}
+                {isOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+              </div>
+            </div>
+
+            <div className="flex gap-2 mt-3">
+              <input
+                type="number" min="0" inputMode="numeric" placeholder="Monto que paga"
+                value={pagoClienteInputs[c.id] || ''}
+                onChange={(e) => setPagoClienteInputs((s) => ({ ...s, [c.id]: e.target.value }))}
+                className="flex-1 px-2 py-1.5 rounded text-sm" style={inputStyle()}
+              />
+              <button onClick={() => registrarPagoCliente(c.id)} className="px-3 rounded flex items-center gap-1 text-sm font-medium" style={{ backgroundColor: C.successBg, color: C.success, border: `1px solid ${C.successBorder}` }}>
+                <Check size={14} /> Registrar pago
+              </button>
+            </div>
+
+            {isOpen && (
+              <div className="mt-3 pt-3" style={{ borderTop: `1px solid ${C.cardBorder}` }}>
+                <div className="flex justify-between text-xs mb-2" style={{ color: C.textMuted }}>
+                  <span>Total vendido (histórico)</span>
+                  <span>{formatMoney(totalVentasCliente(c.id))}</span>
+                </div>
+                <div className="flex justify-between text-xs mb-2" style={{ color: C.textMuted }}>
+                  <span>Total pagado (histórico)</span>
+                  <span>{formatMoney(totalPagadoCliente(c.id))}</span>
+                </div>
+                <p className="text-xs uppercase tracking-wider mt-2 mb-1" style={{ color: C.textMuted }}>Historial de pagos</p>
+                {historialPagos.length === 0 ? (
+                  <p className="text-xs" style={{ color: C.textFaint }}>Todavía no registró pagos.</p>
+                ) : (
+                  <div className="flex flex-col gap-1">
+                    {historialPagos.map((pg) => {
+                      const deleteKey = `pago:${pg.id}`;
+                      return (
+                        <div key={pg.id} className="flex items-center justify-between text-xs">
+                          <span style={{ color: C.textMuted }}>{formatFecha(pg.fecha)}</span>
+                          <span className="font-semibold">{formatMoney(pg.monto)}</span>
+                          {confirmDelete === deleteKey ? (
+                            <span className="flex gap-1 items-center">
+                              <button onClick={() => eliminarPago(pg.id)} className="underline" style={{ color: C.danger }}>Sí</button>
+                              <button onClick={() => setConfirmDelete(null)} style={{ color: C.textMuted }}>No</button>
+                            </span>
+                          ) : (
+                            <button onClick={() => setConfirmDelete(deleteKey)} style={{ color: C.textFaint }}>
+                              <Trash2 size={12} />
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -725,14 +973,14 @@ function ClientesTab(props) {
                       </div>
                     ))}
 
-                    {confirmDelete === c.id ? (
+                    {confirmDelete === `cliente:${c.id}` ? (
                       <div className="flex gap-2 mt-1 text-xs items-center">
                         <span style={{ color: C.danger }}>¿Eliminar este cliente?</span>
                         <button onClick={() => eliminarCliente(c.id)} className="underline" style={{ color: C.danger }}>Sí, eliminar</button>
                         <button onClick={() => setConfirmDelete(null)} style={{ color: C.textMuted }}>Cancelar</button>
                       </div>
                     ) : (
-                      <button onClick={() => setConfirmDelete(c.id)} className="text-xs self-start mt-1 flex items-center gap-1" style={{ color: C.textFaint }}>
+                      <button onClick={() => setConfirmDelete(`cliente:${c.id}`)} className="text-xs self-start mt-1 flex items-center gap-1" style={{ color: C.textFaint }}>
                         <Trash2 size={12} /> Eliminar cliente
                       </button>
                     )}
@@ -781,7 +1029,27 @@ function PreciosTab({ categorias, updateCategoriaCosto, nuevaCategoriaNombre, se
   );
 }
 
-function ResumenTab({ resumenPeriodo, setResumenPeriodo, totales, deudaTotal, clientesConDeuda, pedidosFiltradosResumen }) {
+function resumenPorMes(pedidos) {
+  const map = {};
+  pedidos.forEach((p) => {
+    const mes = p.fecha.slice(0, 7); // YYYY-MM
+    if (!map[mes]) map[mes] = { costo: 0, venta: 0, ganancia: 0 };
+    map[mes].costo += p.totalCosto;
+    map[mes].venta += p.totalVenta;
+    map[mes].ganancia += p.totalGanancia;
+  });
+  return Object.entries(map).sort((a, b) => b[0].localeCompare(a[0]));
+}
+
+function formatMes(key) {
+  const [y, m] = key.split('-');
+  const d = new Date(Number(y), Number(m) - 1, 1);
+  const label = d.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' });
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+function ResumenTab({ resumenPeriodo, setResumenPeriodo, totales, deudaTotal, clientesConDeuda, pedidosFiltradosResumen, pedidos }) {
+  const meses = useMemo(() => resumenPorMes(pedidos), [pedidos]);
   const periodos = [
     { id: 'hoy', label: 'Hoy' },
     { id: 'semana', label: '7 días' },
@@ -837,6 +1105,36 @@ function ResumenTab({ resumenPeriodo, setResumenPeriodo, totales, deudaTotal, cl
               <div key={c.id} className="flex justify-between text-sm">
                 <span>{c.nombre}</span>
                 <span className="font-semibold" style={{ color: C.danger }}>{formatMoney(c.deuda)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section>
+        <h2 className="text-base font-bold mb-1">Resumen mensual</h2>
+        <p className="text-xs mb-3" style={{ color: C.textMuted }}>Cada mes va del día 1 al último día de ese mes calendario.</p>
+        {meses.length === 0 ? (
+          <p className="text-sm" style={{ color: C.textMuted }}>Todavía no hay pedidos cargados.</p>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {meses.map(([key, m]) => (
+              <div key={key} className="rounded-lg p-3" style={{ backgroundColor: C.card, border: `1px solid ${C.cardBorder}` }}>
+                <p className="text-sm font-bold mb-2" style={{ color: C.accent }}>{formatMes(key)}</p>
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  <div>
+                    <p className="text-xs" style={{ color: C.textMuted }}>Costo (a pagar al proveedor)</p>
+                    <p className="font-bold text-sm">{formatMoney(m.costo)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs" style={{ color: C.textMuted }}>Venta total</p>
+                    <p className="font-bold text-sm">{formatMoney(m.venta)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs" style={{ color: C.textMuted }}>Ganancia</p>
+                    <p className="font-bold text-sm" style={{ color: C.success }}>{formatMoney(m.ganancia)}</p>
+                  </div>
+                </div>
               </div>
             ))}
           </div>
